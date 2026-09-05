@@ -11,8 +11,14 @@ if it is not already there. Optional settings: `PINECONE_INDEX_NAME` (default
 Query embeddings use `BAAI/bge-m3` with normalization, matching the old retriever.
 The first retrieval may download this embedding model.
 
-Run `python main.py`. Add `--long-term` to enable Chroma memory; this may also
-download `all-mpnet-base-v2`. Short-term context and SQLite history are always on.
+Run `python main.py`. Long-term Chroma memory starts automatically, alongside
+short-term context and SQLite history. First startup may download `all-mpnet-base-v2`.
+
+For the reused Gradio interface, run `python ui.py` and open the local address
+printed in the terminal. It includes previous chats, new-chat controls, memory
+status, and retrieved source labels/excerpts for live and reopened answers.
+Long-term memory starts automatically in the UI; no extra environment setting is needed.
+The UI binds to localhost and shares one active conversation across browser tabs.
 
 ## Flow
 
@@ -36,7 +42,7 @@ Their agent-list fields are retained for compatibility: retrieval turns record
 `single_agent`, and direct answers record an empty list. History saves original
 questions and full answers; short-term context uses the last three turns.
 
-Long-term memory is optional and stores rewritten questions and summarized RAG
+Long-term memory starts automatically and stores rewritten questions and summarized RAG
 answers. Recall and deduplication are scoped by both agent and exact country set.
 Countries currently come from retrieved source metadata, not a jurisdiction
 classifier. Memory is background only, never a substitute for document evidence.
@@ -55,5 +61,3 @@ The retriever reads eight nearest chunks across the corpus by default. An option
 `citation_label` values and skips missing or ambiguous labels. This initial
 version has no reranker, automatic country filters, or independent citation
 verification; evaluate retrieval coverage, especially for country comparisons.
-
-Run offline checks with `python -m unittest discover -s tests -v`.

@@ -1,6 +1,5 @@
-"""Run a local single-agent chat: python main.py [--long-term]."""
+"""Run a local single-agent chat: python main.py."""
 
-import argparse
 import logging
 from pathlib import Path
 
@@ -8,17 +7,9 @@ from agent import SingleAgentRAG
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--long-term", action="store_true",
-                        help="Enable persistent Chroma Q&A memory")
-    args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     data_dir = Path(__file__).parent / "data"
-    ltm = None
-    if args.long_term:
-        from memory.long_term import LongTermMemory
-        ltm = LongTermMemory(db_dir=str(data_dir / "chroma_db"))
-    rag = SingleAgentRAG(long_term=ltm, data_dir=data_dir)
+    rag = SingleAgentRAG(data_dir=data_dir)
     print("Legal RAG. Use /new for a new chat or /quit to exit.")
     while True:
         try:

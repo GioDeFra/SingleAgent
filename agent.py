@@ -19,6 +19,9 @@ class SingleAgentRAG:
         self.retriever = retriever
         self.ltm = long_term
         self.data_dir = Path(data_dir or Path(__file__).parent / "data")
+        if self.ltm is None:
+            from memory.long_term import LongTermMemory
+            self.ltm = LongTermMemory(db_dir=str(self.data_dir / "chroma_db"))
         self.stm = ShortTermMemory()
         self.history = history if history is not None else ChatHistoryStore(
             db_path=str(self.data_dir / "chat_history.db")
