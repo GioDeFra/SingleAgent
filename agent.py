@@ -4,6 +4,7 @@ import re
 from typing import Optional, Tuple
 
 from llm_client import get_llm_client, model_names
+from retrieval import build_metadata_filter
 
 logger = logging.getLogger(__name__)
 _MODELS = model_names()
@@ -30,13 +31,13 @@ class SingleAgentRAG:
 
     def _triage_and_route(
         self, query: str, session_context: str
-    ) -> Tuple[bool, Optional[str], str]:
+    ) -> Tuple[bool, Optional[str], str, dict]:
         """
         Decide whether to retrieve sources or answer directly.
 
         Returns:
-            (True, None, search_query): retrieve using the standalone query.
-            (False, answer, query): return the direct answer.
+            (True, None, search_query, metadata_filter): filtered retrieval.
+            (False, answer, query, {}): return the direct answer.
         """
         try:
             response = self.llm_client.chat.completions.create(
@@ -64,6 +65,17 @@ class SingleAgentRAG:
                             "Preserve intent, jurisdictions, dates and exact references. "
                             "Never invent facts, jurisdictions or article numbers. "
                             "Keep an already clear question unchanged.\n"
+                            "6. Select metadata filters from the question and its resolved "
+                            "conversation context. Use arrays with these exact values: "
+                            "country: Italy, Estonia, Slovenia; law: Divorce, Inheritance; "
+                            "doc_type: Legal Cases, Civil Codes. Select all relevant values "
+                            "for comparisons. Leave a field empty when unspecified or "
+                            "uncertain. Do not infer country from the user's language. "
+                            "Never substitute a supported country for an unsupported one; "
+                            "preserve unsupported jurisdictions in search_query. Use Legal "
+                            "Cases alone only for explicit case-law requests, Civil Codes "
+                            "alone only for explicit statutory-text requests; otherwise "
+                            "leave doc_type empty so both are searched.\n"
                             "Keep reasoning to one short sentence and direct answers "
                             "concise and in the user's language.\n"
                             "Respond ONLY with valid JSON, no markdown fences:\n"
@@ -71,6 +83,7 @@ class SingleAgentRAG:
                             '  "retrieval": true or false,\n'
                             '  "direct_answer": "..." or null,\n'
                             '  "search_query": "..." or null,\n'
+                            '  "filters": {"country": [], "law": [], "doc_type": []},\n'
                             '  "reasoning": "..."\n'
                             "}\n"
                             "When retrieval=true, set direct_answer=null and provide search_query."
@@ -117,7 +130,13 @@ class SingleAgentRAG:
                 search_query = data.get("search_query")
                 if not isinstance(search_query, str) or not search_query.strip():
                     raise ValueError("retrieval requires a non-empty search_query")
-                return True, None, search_query.strip()
+                try:
+                    metadata_filter = build_metadata_filter(data.get("filters", {}))
+                except ValueError as exc:
+                    logger.warning("Invalid retrieval filters (%s); using unfiltered search", exc)
+                    metadata_filter = {}
+                logger.info("Retrieval filter: %s", metadata_filter)
+                return True, None, search_query.strip(), metadata_filter
 
             direct_answer = data.get("direct_answer")
             if not isinstance(direct_answer, str) or not direct_answer.strip():
@@ -125,14 +144,14 @@ class SingleAgentRAG:
                     "direct route requires a non-empty 'direct_answer'"
                 )
 
-            return False, direct_answer.strip(), query
+            return False, direct_answer.strip(), query, {}
 
         except Exception as exc:
             logger.warning(
                 "Routing failed (%s); defaulting to retrieval",
                 exc,
             )
-            return True, None, query
+            return True, None, query, {}
 
     def _complete(self, system, payload, max_tokens=2000):
         response = self.llm_client.chat.completions.create(
@@ -174,14 +193,15 @@ class SingleAgentRAG:
             raise ValueError("query must be a non-empty string")
         query = query.strip()
         context = self.stm.as_context_string()
-        needs_retrieval, answer, search_query = self._triage_and_route(query, context)
+        needs_retrieval, answer, search_query, metadata_filter = self._triage_and_route(query, context)
         documents, memories, countries = [], [], []
+        citations_verified = None
         if needs_retrieval:
             if self.retriever is None:
                 from retrieval import PineconeRetriever
                 self.retriever = PineconeRetriever()
             # Service errors propagate instead of being mistaken for no results.
-            documents = self.retriever.retrieve(search_query)
+            documents = self.retriever.retrieve(search_query, metadata_filter=metadata_filter)
             countries = sorted({d["country"] for d in documents if d.get("country")})
             if documents:
                 if self.ltm is not None:
@@ -194,6 +214,10 @@ class SingleAgentRAG:
                 answer = self._answer_with_rag(
                     query, search_query, context, documents, memories
                 )
+                from guardrails.output_guard import check_rag_answer
+                checked = check_rag_answer(answer, documents, self.llm_client)
+                answer = checked.answer
+                citations_verified = checked.citations_verified
             else:
                 answer = self._complete(
                     "No citable documents were retrieved. Briefly explain in the user's "
@@ -207,12 +231,14 @@ class SingleAgentRAG:
         self.history.save_turn(
             self.session_id, turn.turn_id, query, answer, agents, documents
         )
-        if documents and self.ltm is not None:
+        if documents and citations_verified is True and self.ltm is not None:
             try:
                 self.ltm.store(search_query, answer, agents, countries_used=countries)
             except Exception as exc:
                 logger.warning("Long-term memory save failed: %s", exc)
         return {"answer": answer, "needs_retrieval": needs_retrieval,
+                "citations_verified": citations_verified,
+                "metadata_filter": metadata_filter,
                 "search_query": search_query if needs_retrieval else None,
                 "retrieved_documents": documents, "session_id": self.session_id,
                 "turn_id": turn.turn_id}

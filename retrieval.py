@@ -3,6 +3,34 @@
 import os
 
 
+FILTER_VALUES = {
+    "country": {"Italy", "Estonia", "Slovenia"},
+    "law": {"Divorce", "Inheritance"},
+    "doc_type": {"Legal Cases", "Civil Codes"},
+}
+
+
+def build_metadata_filter(selection):
+    """Convert validated router selections to Pinecone conditions."""
+    if not isinstance(selection, dict) or set(selection) - set(FILTER_VALUES):
+        raise ValueError("Invalid retrieval filter fields")
+    conditions = []
+    for field, allowed in FILTER_VALUES.items():
+        values = selection.get(field, [])
+        if not isinstance(values, list) or not all(
+            isinstance(value, str) and value in allowed for value in values
+        ):
+            raise ValueError(f"Invalid values for retrieval filter {field}")
+        values = list(dict.fromkeys(values))
+        if len(values) == 1:
+            conditions.append({field: {"$eq": values[0]}})
+        elif values:
+            conditions.append({field: {"$in": values}})
+    if not conditions:
+        return {}
+    return conditions[0] if len(conditions) == 1 else {"$and": conditions}
+
+
 class PineconeRetriever:
     def __init__(self, index_name=None, namespace=None, top_k=8,
                  metadata_filter=None, index=None, embed_model=None):
@@ -25,12 +53,13 @@ class PineconeRetriever:
         self.top_k = top_k
         self.metadata_filter = metadata_filter
 
-    def retrieve(self, query):
+    def retrieve(self, query, metadata_filter=None):
         vector = self.embed_model.encode([query], normalize_embeddings=True)[0].tolist()
         kwargs = dict(vector=vector, namespace=self.namespace, top_k=self.top_k,
                       include_metadata=True)
-        if self.metadata_filter:
-            kwargs["filter"] = self.metadata_filter
+        filters = [f for f in (self.metadata_filter, metadata_filter) if f]
+        if filters:
+            kwargs["filter"] = filters[0] if len(filters) == 1 else {"$and": filters}
         result = self.index.query(**kwargs)
         documents = []
         for match in result.get("matches", []):

@@ -46,8 +46,23 @@ Long-term memory starts automatically and stores rewritten questions and summari
 answers. Recall and deduplication are scoped by both agent and exact country set.
 Countries currently come from retrieved source metadata, not a jurisdiction
 classifier. Memory is background only, never a substitute for document evidence.
-Only turns with retrieved documents are stored, but there is no independent
-grounding validator yet.
+Only RAG turns whose parsed citations pass the output guard are stored in
+long-term memory. Full chat history still retains answers with verification notices.
+
+## Output guard
+
+`guardrails/output_guard.py` adapts the multi-agent per-citation checker. The
+single-agent answer is checked against its retrieved text and metadata before
+display and memory updates. It checks up to ten citation/claim pairs, tries one
+correction for unknown or unsupported citations, and checks the revision again.
+API failures, missing citations, skipped checks, and remaining problems produce
+a notice and prevent long-term memorization. Direct answers bypass this guard.
+`ask()` also returns `citations_verified` (null when the guard was not invoked).
+
+Unlike the original fallback, a label merely mentioned inside another source
+is not accepted as a retrieved citation. A subsection citation can still match
+its retrieved base article. The checker verifies parsed citations, not every
+uncited assertion, and its LLM judgments can be wrong.
 
 Storage defaults to this project's `data/` directory. Existing multi-agent
 databases are not copied or changed. Reusing implementation does not automatically
@@ -59,5 +74,16 @@ import old conversations. Old agent-tagged semantic memories will not match the
 The retriever reads eight nearest chunks across the corpus by default. An optional
 `metadata_filter` can be passed to `PineconeRetriever`. It preserves ingestion
 `citation_label` values and skips missing or ambiguous labels. This initial
-version has no reranker, automatic country filters, or independent citation
-verification; evaluate retrieval coverage, especially for country comparisons.
+version has no reranker; evaluate retrieval coverage, especially for country comparisons.
+
+The triage call also selects country, law, and document-type prefilters using
+the same metadata vocabulary as MultiAgentRag. Multiple values use `$in` and
+different fields are combined with `$and`. Unspecified dimensions stay unrestricted;
+general legal questions search both statutes and cases. Filters use conversation
+context for follow-ups and are returned as `metadata_filter` by `ask()`.
+Invalid filter output falls back to unfiltered retrieval with a logged warning.
+Caller-configured filters are combined with query filters, never overwritten.
+An empty filtered result is not retried against unrelated jurisdictions.
+Country comparisons still share one result budget, so filtering alone does not
+guarantee equal source coverage. Unsupported jurisdictions remain in the search
+question but cannot get a country filter from this corpus's allowed vocabulary.
