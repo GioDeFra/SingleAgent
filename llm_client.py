@@ -31,6 +31,20 @@ from openai import OpenAI
 
 load_dotenv(Path(__file__).parent / "Apikey.env")
 
+
+def configure_tls_certificates():
+    """Repair a stale certificate-file override without disabling TLS checks."""
+    configured = os.environ.get("SSL_CERT_FILE")
+    if configured is not None and not Path(configured).is_file():
+        import certifi
+        bundle = Path(certifi.where())
+        if not bundle.is_file():
+            raise RuntimeError("The certifi CA bundle is missing; reinstall certifi")
+        os.environ["SSL_CERT_FILE"] = str(bundle)
+
+
+configure_tls_certificates()
+
 LLM_PROVIDER = os.getenv("LLM_PROVIDER")
 
 if not LLM_PROVIDER:
@@ -88,6 +102,7 @@ def _config() -> dict:
 
 def get_llm_client() -> OpenAI:
     """OpenAI-compatible client for whichever provider LLM_PROVIDER selects."""
+    configure_tls_certificates()
     cfg = _config()
     api_key = os.environ.get(cfg["api_key_env"])
     if not api_key:

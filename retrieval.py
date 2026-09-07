@@ -1,6 +1,24 @@
 """Read the existing multi-agent corpus without re-ingesting it."""
 
 import os
+import math
+
+
+def _scoring_text(document):
+    """Use the same metadata enrichment as the multi-agent reranker."""
+    skip = {"CASE_ID", "citation_label", "country", "doc_type", "law", "source",
+            "text", "chunk_index", "n_chunks"}
+    placeholders = {"", "no data", "not specified", "n/a", "unknown"}
+    parts = []
+    for key, value in document["metadata"].items():
+        if key in skip or value in (None, [], {}):
+            continue
+        if isinstance(value, str) and value.strip().lower() in placeholders:
+            continue
+        if isinstance(value, list):
+            value = ", ".join(str(item) for item in value)
+        parts.append(f"{key}: {value}")
+    return "; ".join(parts) + "\n" + document["text"] if parts else document["text"]
 
 
 FILTER_VALUES = {
@@ -32,10 +50,11 @@ def build_metadata_filter(selection):
 
 
 class PineconeRetriever:
-    def __init__(self, index_name=None, namespace=None, top_k=8,
-                 metadata_filter=None, index=None, embed_model=None):
-        if top_k < 1:
-            raise ValueError("top_k must be positive")
+    def __init__(self, index_name=None, namespace=None, top_k=5,
+                 metadata_filter=None, index=None, embed_model=None,
+                 n_retrieve=20, reranker=None):
+        if not (1 <= top_k <= n_retrieve):
+            raise ValueError("Require 1 <= top_k <= n_retrieve")
         if index is None:
             from pinecone import Pinecone
             key = os.getenv("PINECONE_API_KEY")
@@ -52,10 +71,12 @@ class PineconeRetriever:
         self.namespace = namespace if namespace is not None else os.getenv("PINECONE_NAMESPACE", "")
         self.top_k = top_k
         self.metadata_filter = metadata_filter
+        self.n_retrieve = n_retrieve
+        self.reranker = reranker
 
     def retrieve(self, query, metadata_filter=None):
         vector = self.embed_model.encode([query], normalize_embeddings=True)[0].tolist()
-        kwargs = dict(vector=vector, namespace=self.namespace, top_k=self.top_k,
+        kwargs = dict(vector=vector, namespace=self.namespace, top_k=self.n_retrieve,
                       include_metadata=True)
         filters = [f for f in (self.metadata_filter, metadata_filter) if f]
         if filters:
@@ -79,4 +100,18 @@ class PineconeRetriever:
         sources = {}
         for document in documents:
             sources.setdefault(document["citation_label"], set()).add(document["source"])
-        return [d for d in documents if len(sources[d["citation_label"]]) == 1]
+        documents = [d for d in documents if len(sources[d["citation_label"]]) == 1]
+        if not documents:
+            return []
+        if self.reranker is None:
+            from sentence_transformers import CrossEncoder
+            self.reranker = CrossEncoder("BAAI/bge-reranker-v2-m3")
+        scores = self.reranker.predict([(query, _scoring_text(d)) for d in documents])
+        if len(scores) != len(documents):
+            raise ValueError("Reranker returned an unexpected number of scores")
+        for document, score in zip(documents, scores):
+            score = float(score)
+            if not math.isfinite(score):
+                raise ValueError("Reranker returned a non-finite score")
+            document["rerank_score"] = score
+        return sorted(documents, key=lambda d: d["rerank_score"], reverse=True)[:self.top_k]

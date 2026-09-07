@@ -1,4 +1,5 @@
 Apikey.env
 data/
+ragas_results/
 __pycache__/
 *.pyc

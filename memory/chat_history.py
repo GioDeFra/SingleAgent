@@ -25,6 +25,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
+from ragas_evaluation import evaluation_record
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +200,7 @@ class ChatHistoryStore:
                     for turn in turn_rows:
                         documents = json.loads(turn["retrieved_documents"])
                         turns.append({
+                            **evaluation_record(turn["query"], turn["answer"], documents),
                             "turn_id": turn["turn_id"],
                             "timestamp": turn["timestamp"],
                             "user_question": turn["query"],
