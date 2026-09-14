@@ -61,9 +61,14 @@ The UI binds to localhost and shares one active conversation across browser tabs
 One triage call either generates a concise direct answer or rewrites the question
 as a standalone retrieval query. Retrieval uses the rewritten question, while
 answer generation receives both the original question and the rewritten version.
-Invalid triage responses fall back to retrieval with the original question.
-No-source results produce an explicit explanation instead of an unsupported
-legal answer. Service failures are raised, not treated as empty search results.
+Jurisdiction-dependent questions without a clear country ask for clarification.
+A country-only reply resumes the original question using conversation context.
+Retrieval is filtered to the requested country set (Italy, Estonia, Slovenia).
+Sources are used only when their country set exactly matches the requested set.
+Unsupported countries, incomplete country coverage, and empty results use an LLM
+answer explicitly labeled as outside the retrieved corpus, without source citations.
+Invalid triage responses ask for clarification. Service failures are raised,
+not treated as empty search results.
 
 `SingleAgentRAG.ask(query)` returns a dictionary with `answer`, `needs_retrieval`,
 `search_query`, `retrieved_documents`, `session_id`, and `turn_id`.
