@@ -50,6 +50,7 @@ def _plain(value):
 
 
 def format_answer(answer, documents):
+    """Append escaped, deduplicated source labels and excerpts for display."""
     if not documents:
         return answer
     lines = []
@@ -138,6 +139,7 @@ def _turns_to_chatbot(turns_data):
 # ---------------------------------------------------------------------------
 
 def bot_logic(user_input, history):
+    """Yield a waiting message, then the completed answer or a safe error."""
 
     # Work on a fresh list so a yielded Gradio value is not mutated later.
     history = list(history or [])
@@ -358,47 +360,24 @@ with gr.Blocks(**blocks_options) as demo:
         session_list,
     ]
 
-    submit_btn.click(
-        fn=handle_submit,
-        inputs=[msg_input, chatbot],
-        outputs=submit_outputs,
-        concurrency_id="single_agent",
-        concurrency_limit=1,
-    )
+    # Both submission controls use the same serialized chat workflow.
+    for submit_event in (submit_btn.click, msg_input.submit):
+        submit_event(
+            fn=handle_submit,
+            inputs=[msg_input, chatbot],
+            outputs=submit_outputs,
+            concurrency_id="single_agent",
+            concurrency_limit=1,
+        )
 
-    msg_input.submit(
-        fn=handle_submit,
-        inputs=[msg_input, chatbot],
-        outputs=submit_outputs,
-        concurrency_id="single_agent",
-        concurrency_limit=1,
-    )
-
-    clear_btn.click(
-        fn=new_session,
-        outputs=[
-            chatbot,
-            msg_input,
-            stm_status,
-            ltm_status,
-            session_list,
-        ],
-        concurrency_id="single_agent",
-        concurrency_limit=1,
-    )
-
-    new_session_btn.click(
-        fn=new_session,
-        outputs=[
-            chatbot,
-            msg_input,
-            stm_status,
-            ltm_status,
-            session_list,
-        ],
-        concurrency_id="single_agent",
-        concurrency_limit=1,
-    )
+    # Both new-chat buttons reset the conversation and refresh the same controls.
+    for button in (clear_btn, new_session_btn):
+        button.click(
+            fn=new_session,
+            outputs=submit_outputs,
+            concurrency_id="single_agent",
+            concurrency_limit=1,
+        )
 
     session_list.select(
         fn=load_selected_session,

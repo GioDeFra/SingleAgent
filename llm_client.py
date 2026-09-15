@@ -5,22 +5,13 @@ Provides a single OpenAI-compatible client and the model names used by
 agents, guardrails, and long-term memory. The active provider is selected
 through LLM_PROVIDER in Apikey.env.
 
-Supported providers: Groq, DeepSeek, Gemini, and z.ai.
+Supported providers: Groq, DeepSeek, and Gemini.
 
 Usage:
     from llm_client import get_llm_client, model_names
 
     client = get_llm_client()
     models = model_names()
-
-    
-Existing LLM_PROVIDER ?
-        ↓
-Supported Provider?
-        ↓
-API Key Available?
-        ↓
-Client Creation
 """
 
 import os
@@ -52,13 +43,7 @@ if not LLM_PROVIDER:
 
 LLM_PROVIDER = LLM_PROVIDER.strip().lower()
 
-# Three roles, so each provider can use a cheaper/faster model where full
-# quality isn't needed, without hardcoding a model name in three different
-# files:
-#   "main"  — answer generation, aggregation, routing/triage (agents.py)
-#   "check" — output-guardrail citation verification (guardrails/output_guard.py)
-#   "light" — long-term-memory summarization (memory/long_term.py) — cheap,
-#             high-volume, doesn't need the strongest model
+# Keep model selection centralized for generation, citation checks, and summaries.
 _PROVIDERS = {
     "groq": {
         "base_url": "https://api.groq.com/openai/v1",

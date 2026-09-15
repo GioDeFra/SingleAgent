@@ -1,137 +1,240 @@
 # SingleAgent
 
-Single-agent legal RAG using the existing `legal-rag` Pinecone corpus.
+A single-agent legal retrieval-augmented generation (RAG) application for
+divorce and inheritance questions concerning Italy, Estonia, and Slovenia.
+It uses an existing Pinecone corpus, local embedding and reranking models,
+and an OpenAI-compatible language model provider.
+
+## Setup and launch
+
+Run the following commands from this project folder, with your Python
+environment activated:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Configure `Apikey.env` in the project root. For example, to use DeepSeek:
+
+```dotenv
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=your_deepseek_key
+PINECONE_API_KEY=your_pinecone_key
+PINECONE_INDEX_NAME=legal-rag
+PINECONE_NAMESPACE=
+```
+
+The configured providers are `deepseek`, `groq`, and `gemini`. Use the
+corresponding `DEEPSEEK_API_KEY`, `GROQ_API_KEY`, or `GEMINI_API_KEY`.
+Provider endpoints and model names are defined in `llm_client.py`.
+Keep real API keys private.
+
+The Pinecone index must already contain compatible documents and embeddings.
+This project reads the existing corpus; it does not ingest documents.
+The index defaults to `legal-rag` and the namespace defaults to empty.
+
+Start the Gradio interface:
+
+```bash
+python ui.py
+```
+
+Open the local address printed in the terminal. The interface provides chat,
+previous conversations, new-chat controls, memory status, and retrieved sources.
+It binds to `127.0.0.1` and shares one active conversation across browser tabs.
+The terminal chat entry point `main.py` has been removed.
+
+First startup may download the long-term memory model. The first retrieval
+may download the embedding and reranking models.
+
+## Project structure
+
+| File or directory | Responsibility |
+| --- | --- |
+| `ui.py` | Gradio interface, conversation selection, and source display. |
+| `agent.py` | `SingleAgentRAG`: routing, retrieval, generation, verification, and memory updates. |
+| `prompts.py` | Prompts for routing, grounded answers, and answers without sources. |
+| `retrieval.py` | Metadata filters, Pinecone search, candidate validation, and reranking. |
+| `llm_client.py` | Provider configuration and shared client creation. |
+| `guardrails/output_guard.py` | Citation checks and one possible corrective pass. |
+| `memory/short_term.py` | Recent conversation context held in RAM. |
+| `memory/chat_history.py` | SQLite conversation history and JSON export. |
+| `memory/long_term.py` | Persistent semantic memory in ChromaDB. |
+| `ragas_evaluation.py` | Independent dataset collection and Ragas scoring. |
+| `questions.json` | Evaluation questions and reference answers. |
+| `requirements.txt` | Application dependencies. |
+| `requirements-evaluation.txt` | Application and evaluation dependencies. |
+| `tests/check_agent_refactor.py` | Offline comparisons against a supplied pre-refactor agent snapshot. |
+
+To study the application, start with `ui.py`, then follow `agent.py` and
+`prompts.py`, `retrieval.py`, the output guard, and the memory modules.
+Read `llm_client.py` alongside these modules to understand model configuration.
+
+## Answer pipeline
+
+1. **Read conversation context.** The agent uses the last three turns to
+   interpret follow-up questions.
+2. **Route the question.** One model call chooses a direct answer or retrieval.
+   For retrieval, it produces a standalone question and selects countries,
+   legal areas, and document types. Questions needing a jurisdiction ask for
+   clarification when no country is specified.
+3. **Retrieve and rerank.** The standalone question is embedded and submitted
+   to Pinecone with metadata filters. Invalid candidates are removed, and a
+   cross-encoder reranks the remaining passages.
+4. **Check country coverage.** Every retained passage must have country
+   metadata, and the combined country set must exactly match the requested set.
+   Empty results or incomplete coverage trigger an answer without sources.
+   Requests including unsupported countries also use this fallback.
+5. **Generate the answer.** The grounded path receives the original question,
+   standalone query, recent conversation, retrieved documents, and relevant
+   semantic memories. Retrieved documents provide evidence; memories provide
+   background.
+6. **Verify citations.** The output guard checks cited claims, may request one
+   revision, and returns the final answer with any verification notices.
+7. **Save the turn.** Short-term context and chat history are updated.
+   Only answers with retrieved documents and successful citation verification
+   are eligible for long-term memory storage.
+
+The fallback prompt requests an answer explicitly labeled as outside the
+retrieved corpus, without source citations. Direct and fallback answers bypass
+the citation guard.
+
+Invalid routing responses or filters, and exceptions during routing, produce
+a clarification response. Retrieval service errors propagate rather than being
+treated as empty results. Empty filtered results are not retried with broader
+filters.
+
+## Retrieval configuration
+
+| Setting | Default |
+| --- | --- |
+| Query embedding model | `BAAI/bge-m3`, normalized embeddings |
+| Cross-encoder reranker | `BAAI/bge-reranker-v2-m3` |
+| Candidates per Pinecone search | Up to 20 |
+| Retained passages after reranking | Up to 5 |
+| Countries | `Italy`, `Estonia`, `Slovenia` |
+| Legal areas (`law`) | `Divorce`, `Inheritance` |
+| Document types (`doc_type`) | `Legal Cases`, `Civil Codes` |
+
+Query embeddings must match the model used to build the corpus.
+`PineconeRetriever` accepts configurable `n_retrieve`, `top_k`, namespace,
+and an optional base metadata filter.
+
+Multiple values in one field use `$in`; different fields use `$and`.
+Unspecified legal areas and document types remain unrestricted.
+Caller-configured filters are combined with routing filters.
+
+Candidates with missing text or citation labels are excluded. Labels shared
+by different sources are also excluded. Ingestion citation labels are preserved.
+Returned documents retain Pinecone `score` and add `rerank_score`.
+Answer generation, source display, and evaluation use the final reranked order.
+
+All requested countries and document types share one search budget.
+There are no separate searches or quotas per country. Exact country coverage
+does not guarantee that the passages answer every part of the question.
+
+## Memory and citation checks
+
+Storage defaults to the project's `data/` directory:
+
+- `chat_history.db`: persistent conversation history.
+- `chat_history.json`: readable history and evaluation fields.
+- `chroma_db/`: long-term semantic memory using `all-mpnet-base-v2`.
+
+Short-term memory retains up to ten turns and supplies the latest three to
+the answer pipeline. Starting a new session clears that conversation context
+while retaining saved chats and long-term memory.
+
+Long-term recall and deduplication are scoped to `single_agent` and the exact
+country set. Verified RAG answers are stored with their standalone questions.
+Memory failures are logged without stopping answer generation. Existing
+multi-agent databases are not automatically imported.
+
+`check_rag_answer()` checks up to ten citation/claim pairs per pass against
+retrieved text and metadata. It can attempt one correction for unknown or
+unsupported citations, then check the revision. Missing citations, skipped
+checks, API failures, or unresolved problems produce a notice and prevent
+long-term storage. Full chat history still retains these answers.
+
+A label mentioned inside another source is not enough to establish a retrieved
+citation; a subsection citation may match its retrieved base article.
+The guard checks parsed citations, not every uncited assertion, and its model
+judgments are not a guarantee of factual correctness.
+
+## Python interface
+
+```python
+from agent import SingleAgentRAG
+
+rag = SingleAgentRAG()
+result = rag.ask("What are the legal conditions for divorce in Italy?")
+print(result["answer"])
+```
+
+Each instance represents one conversation. Use `new_session()` to start a
+fresh conversation, `load_session(session_id)` to resume one, and
+`rag.history.list_sessions()` to list saved sessions.
+
+`ask()` returns:
+
+| Field | Meaning |
+| --- | --- |
+| `answer` | Final answer, including any verification notice. |
+| `needs_retrieval` | Whether routing selected retrieval; may remain true when retrieval leads to fallback. |
+| `search_query` | Standalone retrieval query, or null for a direct route. |
+| `metadata_filter` | Query-specific metadata filter. |
+| `retrieved_documents` | Retained sources, or an empty list when no sources are used. |
+| `citations_verified` | Citation verification result; null when the guard was not invoked. |
+| `evaluation` | Evaluation record prepared without running Ragas scoring. |
+| `session_id`, `turn_id` | Conversation and turn identifiers. |
 
 ## Ragas evaluation
 
-`questions.json` is copied unchanged from MultiAgentRag, including reference answers.
-Evaluation exports contain
-`id`, `user_input`, `reference`, `response`, `retrieved_contexts`,
-`contexts_by_agent`, and `status`. The same fields are included in each turn of
-`data/chat_history.json`. Contexts include full text and metadata in retrieval
-order, not just display excerpts. `contexts_by_agent` uses `single_agent`.
-Reference answers are attached after generation and are never fed to the RAG.
-Questions not matching the question file have null `id` and `reference`.
+Evaluation has two separate stages: collect answers, then score the saved dataset.
 
-For a comparable independent benchmark, collect with:
+### Collect answers
+
+`questions.json` contains a list of objects with non-empty `question` and
+`reference` strings. Reference answers are attached after generation and are
+never passed to the RAG as answer evidence.
 
 ```bash
 python ragas_evaluation.py --input questions.json
 ```
 
-This creates a timestamped `ragas_results` folder with `dataset.json`, saving
-after each question. Each question starts a fresh session and semantic memory
-is disabled for evaluation only, matching the multi-agent benchmark. Normal UI
-memory remains enabled. A failed generation is recorded and collection continues.
+Collection creates a timestamped directory under `ragas_results/` and saves
+`dataset.json` after every question. Each case starts a fresh session and
+long-term memory is disabled for this run. Normal UI memory is unaffected.
+Generation failures are recorded and collection continues.
 
-To score a collected dataset:
+Successful records contain `id`, `user_input`, `reference`, `response`,
+`retrieved_contexts`, `contexts_by_agent`, and `status`. Contexts include
+full passage text and metadata in reranked order. When sources exist,
+`contexts_by_agent` uses the key `single_agent`.
+
+### Score the dataset
 
 ```bash
 python -m pip install -r requirements-evaluation.txt
 python ragas_evaluation.py --score-only ragas_results/YOUR_RUN/dataset.json
 ```
 
-Scoring uses the same DeepSeek judge, local BGE-M3 embeddings and Ragas 0.3.2
-metrics as MultiAgentRag: context precision, context recall, faithfulness, answer
-relevancy and answer correctness. It requires `DEEPSEEK_API_KEY`; BGE-M3 must
-already be cached. Outputs include `scores.json`, `scores.csv` and `summary.json`.
-Scores are computed only during scoring, not fabricated or generated by the chat.
-The history JSON is session-wrapped; use the batch `dataset.json` for scoring.
+Replace `YOUR_RUN` with the collection directory. Scoring creates a new
+results directory containing the copied dataset, `scores.json`,
+`scores.csv`, and `summary.json`. Use `--output PATH` with either stage
+to choose a new output directory; the directory must not already exist.
 
-## Setup
+The evaluator uses Ragas 0.3.2, a DeepSeek judge configured in
+`ragas_evaluation.py`, and local BGE-M3 embeddings. It requires
+`DEEPSEEK_API_KEY` even if the chat uses another provider. BGE-M3 must already
+be cached locally for scoring. Embeddings use CUDA when available, otherwise CPU.
 
-Install dependencies with `python -m pip install -r requirements.txt`.
-Keep your existing `Apikey.env` provider settings and add `PINECONE_API_KEY`
-if it is not already there. Optional settings: `PINECONE_INDEX_NAME` (default
-`legal-rag`) and `PINECONE_NAMESPACE` (default empty, matching the old project).
-Query embeddings use `BAAI/bge-m3` with normalization, matching the old retriever.
-The first retrieval may download this embedding model.
+The five metrics are context precision with reference, context recall,
+faithfulness, answer relevancy, and answer correctness. Context-dependent
+metrics are skipped when no contexts were retrieved. Metric failures are
+recorded separately.
 
-Run `python main.py`. Long-term Chroma memory starts automatically, alongside
-short-term context and SQLite history. First startup may download `all-mpnet-base-v2`.
-
-For the reused Gradio interface, run `python ui.py` and open the local address
-printed in the terminal. It includes previous chats, new-chat controls, memory
-status, and retrieved source labels/excerpts for live and reopened answers.
-Long-term memory starts automatically in the UI; no extra environment setting is needed.
-The UI binds to localhost and shares one active conversation across browser tabs.
-
-## Flow
-
-One triage call either generates a concise direct answer or rewrites the question
-as a standalone retrieval query. Retrieval uses the rewritten question, while
-answer generation receives both the original question and the rewritten version.
-Jurisdiction-dependent questions without a clear country ask for clarification.
-A country-only reply resumes the original question using conversation context.
-Retrieval is filtered to the requested country set (Italy, Estonia, Slovenia).
-Sources are used only when their country set exactly matches the requested set.
-Unsupported countries, incomplete country coverage, and empty results use an LLM
-answer explicitly labeled as outside the retrieved corpus, without source citations.
-Invalid triage responses ask for clarification. Service failures are raised,
-not treated as empty search results.
-
-`SingleAgentRAG.ask(query)` returns a dictionary with `answer`, `needs_retrieval`,
-`search_query`, `retrieved_documents`, `session_id`, and `turn_id`.
-Use `new_session()` or `load_session(session_id)` to change conversations.
-Use one instance per conversation. History can be listed via
-`rag.history.list_sessions()`.
-
-## Memory reuse
-
-The short-term and chat-history implementations are copied from MultiAgentRag.
-Their agent-list fields are retained for compatibility: retrieval turns record
-`single_agent`, and direct answers record an empty list. History saves original
-questions and full answers; short-term context uses the last three turns.
-
-Long-term memory starts automatically and stores rewritten questions and summarized RAG
-answers. Recall and deduplication are scoped by both agent and exact country set.
-Countries currently come from retrieved source metadata, not a jurisdiction
-classifier. Memory is background only, never a substitute for document evidence.
-Only RAG turns whose parsed citations pass the output guard are stored in
-long-term memory. Full chat history still retains answers with verification notices.
-
-## Output guard
-
-`guardrails/output_guard.py` adapts the multi-agent per-citation checker. The
-single-agent answer is checked against its retrieved text and metadata before
-display and memory updates. It checks up to ten citation/claim pairs, tries one
-correction for unknown or unsupported citations, and checks the revision again.
-API failures, missing citations, skipped checks, and remaining problems produce
-a notice and prevent long-term memorization. Direct answers bypass this guard.
-`ask()` also returns `citations_verified` (null when the guard was not invoked).
-
-Unlike the original fallback, a label merely mentioned inside another source
-is not accepted as a retrieved citation. A subsection citation can still match
-its retrieved base article. The checker verifies parsed citations, not every
-uncited assertion, and its LLM judgments can be wrong.
-
-Storage defaults to this project's `data/` directory. Existing multi-agent
-databases are not copied or changed. Reusing implementation does not automatically
-import old conversations. Old agent-tagged semantic memories will not match the
-`single_agent` filter without an explicit migration.
-
-## Retrieval limits
-
-The retriever reads 20 candidate chunks in one filtered Pinecone search, then
-reranks them with `BAAI/bge-reranker-v2-m3` and keeps up to 5. These are the
-multi-agent project's per-specialist limits, not its total across all agents.
-Source coverage remains structurally different: there are no separate searches
-or quotas by country or document type. `n_retrieve` and `top_k` are configurable
-on `PineconeRetriever`. First retrieval may download the reranker. An optional
-`metadata_filter` can be passed to `PineconeRetriever`. It preserves ingestion
-`citation_label` values and skips missing or ambiguous labels. This initial
-version preserves Pinecone `score` and adds `rerank_score` to each returned document.
-Answers, source displays and evaluation contexts all use the final reranked order.
-
-The triage call also selects country, law, and document-type prefilters using
-the same metadata vocabulary as MultiAgentRag. Multiple values use `$in` and
-different fields are combined with `$and`. Unspecified dimensions stay unrestricted;
-questions about legal permissions, prohibitions and conditions select statutes;
-questions combining legal rules and judicial practice search both. Filters use conversation
-context for follow-ups and are returned as `metadata_filter` by `ask()`.
-Invalid filter output falls back to unfiltered retrieval with a logged warning.
-Caller-configured filters are combined with query filters, never overwritten.
-An empty filtered result is not retried against unrelated jurisdictions.
-Country comparisons still share one result budget, so filtering alone does not
-guarantee equal source coverage. Unsupported jurisdictions remain in the search
-question but cannot get a country filter from this corpus's allowed vocabulary.
+Chat history also includes evaluation fields, but its JSON is grouped by
+session. Pass the batch `dataset.json` to the scoring command.
+Questions that do not match `questions.json` have null reference and case ID
+in their automatically prepared chat evaluation records.

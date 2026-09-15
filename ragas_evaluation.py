@@ -163,6 +163,34 @@ def make_embeddings():
     return LangchainEmbeddingsWrapper(embeddings)
 
 
+async def _score_row(row, metrics, sample_type, context_metrics):
+    """Score one answer, preserving skipped metrics and per-metric failures."""
+    result = {"id": row["id"], "question": row["user_input"], "status": row["status"]}
+    errors = {}
+    if row["status"] == "generation_error":
+        errors["generation"] = row.get("error", "Generation failed")
+    else:
+        sample = sample_type(
+            user_input=row["user_input"], response=row["response"],
+            reference=row["reference"], retrieved_contexts=row["retrieved_contexts"],
+        )
+        for name, metric in metrics.items():
+            if name in context_metrics and not row["retrieved_contexts"]:
+                result[name] = None
+                continue
+            try:
+                value = float(await metric.single_turn_ascore(sample))
+                if not math.isfinite(value):
+                    raise ValueError("Score is not finite")
+                result[name] = value
+            except Exception as exc:
+                result[name] = None
+                errors[name] = f"{type(exc).__name__}: {exc}"
+            print(f"Case {row['id']}: {name} = {result[name]}", flush=True)
+    result["errors"] = errors
+    return result
+
+
 async def score(rows: list[dict], output: Path) -> None:
     from llm_client import configure_tls_certificates
     configure_tls_certificates()
@@ -186,30 +214,10 @@ async def score(rows: list[dict], output: Path) -> None:
     context_metrics = {"context_precision", "context_recall", "faithfulness"}
     results = []
     for row in rows:
-        result = {"id": row["id"], "question": row["user_input"], "status": row["status"]}
-        errors = {}
-        if row["status"] == "generation_error":
-            errors["generation"] = row.get("error", "Generation failed")
-        else:
-            sample = SingleTurnSample(user_input=row["user_input"], response=row["response"],
-                                      reference=row["reference"], retrieved_contexts=row["retrieved_contexts"])
-            for name, metric in metrics.items():
-                if name in context_metrics and not row["retrieved_contexts"]:
-                    result[name] = None
-                    continue
-                try:
-                    value = float(await metric.single_turn_ascore(sample))
-                    if not math.isfinite(value):
-                        raise ValueError("Score is not finite")
-                    result[name] = value
-                except Exception as exc:
-                    result[name] = None
-                    errors[name] = f"{type(exc).__name__}: {exc}"
-                print(f"Case {row['id']}: {name} = {result[name]}", flush=True)
-        result["errors"] = errors
+        result = await _score_row(row, metrics, SingleTurnSample, context_metrics)
         results.append(result)
         write_json(output / "scores.json", results)
-        print(f"Evaluated case {row['id']} ({len(errors)} errors)")
+        print(f"Evaluated case {row['id']} ({len(result['errors'])} errors)")
 
     names = list(metrics)
     summary = {"judge_model": model, "judge_base_url": base_url, "total_cases": len(rows),

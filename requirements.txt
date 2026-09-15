@@ -1,6 +1,0 @@
-openai
-python-dotenv
-pinecone
-sentence-transformers
-chromadb
-gradio

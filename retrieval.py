@@ -75,6 +75,7 @@ class PineconeRetriever:
         self.reranker = reranker
 
     def retrieve(self, query, metadata_filter=None):
+        """Embed the query, combine filters, validate candidates, and rerank."""
         vector = self.embed_model.encode([query], normalize_embeddings=True)[0].tolist()
         kwargs = dict(vector=vector, namespace=self.namespace, top_k=self.n_retrieve,
                       include_metadata=True)
@@ -82,8 +83,14 @@ class PineconeRetriever:
         if filters:
             kwargs["filter"] = filters[0] if len(filters) == 1 else {"$and": filters}
         result = self.index.query(**kwargs)
+        documents = self._prepare_documents(result.get("matches", []))
+        return self._rerank(query, documents)
+
+    @staticmethod
+    def _prepare_documents(matches):
+        """Keep usable text and citation labels with unambiguous source identity."""
         documents = []
-        for match in result.get("matches", []):
+        for match in matches:
             meta = match.get("metadata", {}) or {}
             text, label = meta.get("text"), meta.get("citation_label")
             if not isinstance(text, str) or not text.strip():
@@ -101,6 +108,10 @@ class PineconeRetriever:
         for document in documents:
             sources.setdefault(document["citation_label"], set()).add(document["source"])
         documents = [d for d in documents if len(sources[d["citation_label"]]) == 1]
+        return documents
+
+    def _rerank(self, query, documents):
+        """Score valid candidates and retain the highest-ranked passages."""
         if not documents:
             return []
         if self.reranker is None:

@@ -1,5 +1,0 @@
--r requirements.txt
-ragas==0.3.2
-langchain-openai>=0.3,<0.4
-langchain-community>=0.3,<0.4
-sentence-transformers>=3,<6

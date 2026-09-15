@@ -1,39 +1,8 @@
-"""
-guardrails/output_guard.py — Per-citation output grounding check.
+"""Verify parsed citation claims against their retrieved source passages.
 
-After the single agent generates an answer, this module verifies that each
-individual "[label]" citation in the answer is actually supported by the
-specific source text behind that label — not just that the answer as a
-whole is "plausible" given the union of everything retrieved.
-
-Previous version (whole-answer check)
---------------------------------------
-The original implementation compared the full answer against the top 6
-retrieved chunks concatenated together, in one LLM call, for one binary
-GROUNDED / NOT_GROUNDED verdict. That is structurally blind to citation
-*attribution* errors: if the true fact ("a public deed is required") is
-present *somewhere* in the combined context, the whole-answer check
-passes even when the answer attached that fact to the wrong label (e.g.
-"[Art. 159]" instead of "[Art. 162]"). The content is grounded; the
-citation is not — and the old check had no way to tell the difference.
-
-This version
-------------
-1. Parse the answer into sentences and find every "[label]" citation.
-2. For each (sentence, label) pair:
-   - if `label` isn't in the supplied label -> source-text map at all,
-     flag it immediately as an unknown/invented citation (no LLM call
-     needed — this is a pure lookup failure);
-   - otherwise, ask a small/fast model whether that *specific* source
-     text supports that *specific* sentence (not the whole answer).
-3. Only the citations that fail (or whose source is missing) get a
-   warning; citations that pass are left alone. This is a much more
-   precise signal than a single pass/fail verdict over everything.
-
-This is still a secondary safety net, not the primary answer path: any
-failure (LLM API timeout, rate limit, unparseable response, regex edge case)
-must never crash the pipeline. Failures degrade to a neutral notice
-rather than raising, exactly like before.
+Check up to ten citation claims per pass and attempt one correction for
+unknown or unsupported citations. Incomplete checks produce a notice.
+This does not verify every uncited assertion in the answer.
 """
 
 import logging
@@ -53,7 +22,7 @@ from llm_client import get_llm_client, model_names
 # LOAD API KEY
 # ---------------------------------------------------------------------------
 
-# Relative to this file's location, same pattern as agents.py / long_term.py —
+# Relative to this file's location, same pattern as agent.py / long_term.py —
 # a hardcoded absolute path here would break on any machine but the one it
 # was written on.
 load_dotenv(Path(__file__).parent.parent / "Apikey.env")
@@ -553,11 +522,7 @@ def check_grounding(
         )
 
     if not claims:
-        # No bracketed citations found at all — nothing to verify against
-        # a specific source. This does not necessarily mean the answer is
-        # wrong (e.g. a short "no relevant documents" reply), so no
-        # warning is added; this differs from the "no chunks retrieved"
-        # case above, which IS worth flagging.
+        # An answer without parsed citations cannot pass citation verification.
         return "[NOTE: no citations were provided, so citation support could not be verified.]\n\n" + answer
 
     logger.debug("Extracted citation claims: %s", claims)
@@ -565,12 +530,7 @@ def check_grounding(
     if llm_client is None:
         llm_client = get_llm_client()
 
-    # Each entry is (label, sentence) — keeping the specific sentence, not
-    # just the label, means the warning shown to the user (and to whoever
-    # is debugging it) points straight at the exact claim that failed
-    # instead of requiring a full log trace to find it, which is what
-    # made diagnosing the last few false positives in this session slower
-    # than it needed to be.
+    # Retain the claim text so notices identify the exact citation problem.
     unknown_label: List[Tuple[str, str]] = []   # cited a label that isn't in chunk_by_label at all
     unsupported: List[Tuple[str, str]] = []     # label exists, but source doesn't support the claim
     unverifiable: List[Tuple[str, str]] = []    # check itself failed (transient error)

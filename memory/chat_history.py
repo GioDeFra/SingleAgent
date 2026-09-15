@@ -131,7 +131,7 @@ class ChatHistoryStore:
         retrieved_documents: Optional[List[Dict]] = None,
     ) -> None:
         """
-        Append one turn to a session. Call this after every supervisor.ask(),
+        Append one turn to a session during SingleAgentRAG.ask(),
         alongside stm.add_turn() — same data, different destination.
 
         The session title is set from the first turn's question (truncated).
@@ -180,6 +180,27 @@ class ChatHistoryStore:
 
         self._export_json()
 
+    @staticmethod
+    def _export_turn(turn):
+        """Format a saved turn for JSON without changing its evaluation fields."""
+        documents = json.loads(turn["retrieved_documents"])
+        return {
+            **evaluation_record(turn["query"], turn["answer"], documents),
+            "turn_id": turn["turn_id"],
+            "timestamp": turn["timestamp"],
+            "user_question": turn["query"],
+            "system_answer": _answer_without_source_appendix(turn["answer"]),
+            "agents_activated": json.loads(turn["agents_activated"]),
+            "retrieved_documents": [
+                {
+                    key: value
+                    for key, value in document.items()
+                    if key != "excerpt"
+                }
+                for document in documents
+            ],
+        }
+
     def _export_json(self) -> None:
         """Write a complete JSON history while excluding source excerpts."""
         try:
@@ -196,29 +217,7 @@ class ChatHistoryStore:
                         "WHERE session_id = ? ORDER BY turn_id ASC",
                         (session["session_id"],),
                     ).fetchall()
-                    turns = []
-                    for turn in turn_rows:
-                        documents = json.loads(turn["retrieved_documents"])
-                        turns.append({
-                            **evaluation_record(turn["query"], turn["answer"], documents),
-                            "turn_id": turn["turn_id"],
-                            "timestamp": turn["timestamp"],
-                            "user_question": turn["query"],
-                            "system_answer": _answer_without_source_appendix(
-                                turn["answer"]
-                            ),
-                            "agents_activated": json.loads(
-                                turn["agents_activated"]
-                            ),
-                            "retrieved_documents": [
-                                {
-                                    key: value
-                                    for key, value in document.items()
-                                    if key != "excerpt"
-                                }
-                                for document in documents
-                            ],
-                        })
+                    turns = [self._export_turn(turn) for turn in turn_rows]
                     sessions.append({
                         "session_id": session["session_id"],
                         "title": session["title"],

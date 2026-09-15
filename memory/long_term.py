@@ -4,7 +4,7 @@ memory/long_term.py — Long-term (cross-session) persistent memory.
 Stores concise summaries of retrieval-grounded Q&A in ChromaDB (on disk,
 survives restarts).
 
-Past Q&A pairs are embedded and indexed so the supervisor can find
+Past Q&A pairs are embedded and indexed so the agent can find
 semantically similar questions that were already answered. If a good match
 is found, the past summary is injected as supporting background to improve
 continuity and consistency. It does NOT replace the normal Pinecone
@@ -47,7 +47,7 @@ LEGACY_FACT_COLLECTION = "ltm_facts"
 DEFAULT_MAX_QA_PAIRS = 150
 
 # Hard ceiling only used as a fallback if LLM summarization fails.
-# Never used to cut a sentence in half — see _truncate().
+# Truncation uses a space boundary when available; it may shorten a sentence.
 ANSWER_FALLBACK_MAX_CHARS = 2000
 
 
@@ -63,12 +63,12 @@ class LongTermMemory:
     ----------
     db_dir : str
         Path to the ChromaDB folder. Separate concern from the RAG
-        document corpus, which lives in Pinecone (see agents.py) — this
+        document corpus, which lives in Pinecone (see retrieval.py) — this
         is only for cross-session Q&A summary memory.
     embedding_model : str
         SentenceTransformer model name. Deliberately independent from the
         RAG corpus's embedding model (currently BGE-M3, see agents.py
-        EMBEDDING_MODEL): unlike Pinecone, where query and document
+        for the model configuration): unlike Pinecone, where query and document
         vectors must share the same dimensionality, this ChromaDB
         instance only ever compares vectors against other vectors it
         wrote itself — there's no cross-store compatibility requirement.
@@ -86,11 +86,8 @@ class LongTermMemory:
 
     Thread-safety
     -------------
-    ChromaDB's PersistentClient is not guaranteed safe for concurrent
-    reads/writes across threads. Since store() can be called from a
-    background thread (e.g. supervisor answers the user immediately and
-    persists to LTM afterwards) while recall_similar() may be in flight on
-    the main thread, all collection access is serialized behind one lock.
+    Collection reads and writes share one lock. Summary generation runs
+    outside the lock because it does not access the database.
     """
 
     def __init__(
@@ -139,7 +136,7 @@ class LongTermMemory:
     ) -> None:
         """
         Save a Q&A pair using an LLM summary of the answer.
-        Called at the end of every successful supervisor.ask() call.
+        The agent calls this only for retrieved answers that pass citation checks.
 
         Dedup behaviour: if a near-identical question already exists
         (distance <= dedup_similarity_threshold), that record is UPDATED
