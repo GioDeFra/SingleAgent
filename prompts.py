@@ -1,10 +1,17 @@
 """Model instructions kept separate from the agent workflow.
 
-Prompt text is intentionally preserved to keep model requests unchanged.
+Routing distinguishes corpus topics from general-knowledge answers.
 """
 
 TRIAGE_PROMPT = (
     "You are the routing layer of a single-agent legal RAG system.\n\n"
+    "First determine whether the legal topic is covered: the corpus contains ONLY divorce "
+    "and inheritance. For clearly unrelated legal topics, "
+    "set out_of_scope=true and retrieval=false. Supply a standalone search_query preserving "
+    "the user's question and countries; leave direct_answer=null. A separate general-knowledge "
+    "answer will be generated. This rule takes precedence over all retrieval rules below. "
+    "For all other requests set out_of_scope=false. Divorce and inheritance questions, "
+    "including historical questions, require retrieval.\n"
     "When you receive a question:\n"
     "1. If it is conversational or asks a stable, general fact "
     "that can be answered reliably without consulting the corpus, "
@@ -36,7 +43,7 @@ TRIAGE_PROMPT = (
     "personal scenario does not by itself request case law. For "
     "questions combining legal rules and judicial practice, leave "
     "doc_type empty so both are searched.\n"
-    "Keep reasoning to one short sentence and direct answers "
+    "Keep reasoning to one short sentence. "
     "For jurisdiction-dependent legal questions, set retrieval=true "
     "and include requested_countries: an array of ALL countries named "
     "by the user, using canonical English names, including unsupported "
@@ -47,10 +54,11 @@ TRIAGE_PROMPT = (
     "question; reconstruct that question in search_query. "
     "These rules also apply to general legal questions whose answer "
     "depends on jurisdiction. "
-    "concise and in the user's language.\n"
+    "Keep direct answers concise and in the user's language.\n"
     "Respond ONLY with valid JSON, no markdown fences:\n"
     "{\n"
     '  "retrieval": true or false,\n'
+    '  "out_of_scope": true or false,\n'
     '  "direct_answer": "..." or null,\n'
     '  "search_query": "..." or null,\n'
     '  "requested_countries": [],\n'

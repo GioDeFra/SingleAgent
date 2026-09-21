@@ -1,7 +1,7 @@
 """Independent RAG evaluation without modifying existing chats or memory.
 
 Install in the project environment:
-    pip install "ragas==0.3.2" "langchain-openai>=0.3,<0.4" "sentence-transformers>=3,<6"
+    pip install "ragas==0.3.2" "langchain-google-genai>=4" "sentence-transformers>=3,<6"
 
 Pass a JSON file containing a list of
 objects {"question": "...", "reference": "..."} using --input.
@@ -15,7 +15,7 @@ Each question is independent: no short-term or long-term memory between cases.
 Metrics: context precision with reference, context recall, faithfulness,
 answer relevancy, and answer correctness.
 Answer correctness uses Ragas defaults: 75% factuality and 25% semantic similarity.
-DeepSeek handles all LLM evaluations. Answer relevancy and correctness use
+Gemini handles all LLM evaluations. Answer relevancy and correctness use
 local BGE-M3 embeddings; no embedding API or additional API key is used.
 The embedding model must already be cached locally. CUDA is used when available,
 otherwise embeddings run on CPU. Set EMBEDDINGS["device"] to override this.
@@ -39,9 +39,9 @@ from pathlib import Path
 
 
 EVALUATOR = {
-    "base_url": "https://api.deepseek.com",
-    "model": "deepseek-chat",
-    "api_key_env": "DEEPSEEK_API_KEY",
+    "provider": "Google Gemini API",
+    "model": "gemini-2.5-flash",
+    "api_key_env": "GEMINI_API_KEY",
 }
 
 EMBEDDINGS = {
@@ -66,6 +66,11 @@ def read_cases(path: Path) -> list[dict]:
 
 def write_json(path: Path, value) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+
+
+def evaluation_response(answer: str) -> str:
+    """Remove the UI-only sources appendix before Ragas scoring."""
+    return answer.split("\n\n---\n\n### Sources used", 1)[0].strip()
 
 
 class NoLongTermMemory:
@@ -128,22 +133,23 @@ def make_judge():
     from dotenv import load_dotenv
 
     load_dotenv(Path(__file__).parent / "Apikey.env")
-    for field in ("base_url", "model", "api_key_env"):
+    for field in ("provider", "model", "api_key_env"):
         if not isinstance(EVALUATOR.get(field), str) or not EVALUATOR[field].strip():
             raise ValueError(f"Set EVALUATOR[{field!r}] in ragas_evaluation.py.")
     model = EVALUATOR["model"].strip()
-    base_url = EVALUATOR["base_url"].strip()
+    provider = EVALUATOR["provider"].strip()
     key_name = EVALUATOR["api_key_env"].strip()
-    api_key = os.getenv(key_name)
+    api_key = os.getenv(key_name) or os.getenv("GOOGLE_API_KEY")
     if not api_key or not api_key.strip():
         raise ValueError(f"Missing {key_name}: add it to the environment or Apikey.env.")
 
-    from langchain_openai import ChatOpenAI
+    from langchain_google_genai import ChatGoogleGenerativeAI
     from ragas.llms import LangchainLLMWrapper
     from ragas.run_config import RunConfig
-    llm = ChatOpenAI(model=model, api_key=api_key,
-                     base_url=base_url, temperature=0, timeout=180, max_retries=2)
-    return LangchainLLMWrapper(llm, run_config=RunConfig(timeout=180, max_retries=2)), model, base_url
+    llm = ChatGoogleGenerativeAI(model=model, google_api_key=api_key,
+                                temperature=0, timeout=180, max_retries=2,
+                                max_output_tokens=4096)
+    return LangchainLLMWrapper(llm, run_config=RunConfig(timeout=180, max_retries=2)), model, provider
 
 
 def make_embeddings():
@@ -171,7 +177,7 @@ async def _score_row(row, metrics, sample_type, context_metrics):
         errors["generation"] = row.get("error", "Generation failed")
     else:
         sample = sample_type(
-            user_input=row["user_input"], response=row["response"],
+            user_input=row["user_input"], response=evaluation_response(row["response"]),
             reference=row["reference"], retrieved_contexts=row["retrieved_contexts"],
         )
         for name, metric in metrics.items():
@@ -201,7 +207,7 @@ async def score(rows: list[dict], output: Path) -> None:
     )
     from ragas.run_config import RunConfig
 
-    judge, model, base_url = make_judge()
+    judge, model, provider = make_judge()
     embeddings = make_embeddings()
     metrics = {"context_precision": LLMContextPrecisionWithReference(llm=judge),
                "context_recall": LLMContextRecall(llm=judge),
@@ -220,7 +226,7 @@ async def score(rows: list[dict], output: Path) -> None:
         print(f"Evaluated case {row['id']} ({len(result['errors'])} errors)")
 
     names = list(metrics)
-    summary = {"judge_model": model, "judge_base_url": base_url, "total_cases": len(rows),
+    summary = {"judge_model": model, "judge_provider": provider, "total_cases": len(rows),
                "embedding_model": EMBEDDINGS["model"], "embedding_provider": EMBEDDINGS["provider"],
                "answer_correctness_weights": metrics["answer_correctness"].weights,
                "answer_relevancy_strictness": metrics["answer_relevancy"].strictness,

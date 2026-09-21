@@ -101,6 +101,19 @@ class SingleAgentRAG:
         if type(needs_retrieval) is not bool:
             raise ValueError("'retrieval' must be a JSON boolean")
 
+        out_of_scope = data.get("out_of_scope", False)
+        if type(out_of_scope) is not bool:
+            raise ValueError("'out_of_scope' must be a JSON boolean")
+        if out_of_scope:
+            if needs_retrieval:
+                raise ValueError("Out-of-scope topics cannot request corpus retrieval")
+            search_query = data.get("search_query")
+            if not isinstance(search_query, str) or not search_query.strip():
+                raise ValueError("Out-of-scope routing requires a standalone question")
+            answer = self._answer_without_sources(query, search_query.strip(), session_context)
+            notice = "**Topic outside the corpus: LLM answer, not verified against RAG sources.**"
+            return False, f"{notice}\n\n{answer}", query, {}
+
         reasoning = data.get("reasoning", "")
         if not isinstance(reasoning, str):
             reasoning = ""
